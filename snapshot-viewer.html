@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>JobTracker — Snapshot</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f0f13; color: #e2e2f0; font-family: system-ui, sans-serif; }
+    #jt-loading {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 14px; text-align: center;
+      height: 100vh;
+    }
+    .spinner {
+      width: 32px; height: 32px; border: 3px solid #2a2a3a;
+      border-top-color: #6366f1; border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #jt-loading p  { color: #7070a0; font-family: monospace; font-size: 13px; }
+    #jt-loading span { color: #6366f1; font-size: 16px; font-weight: 600; }
+    #jt-error {
+      display: none; padding: 32px; text-align: center;
+      color: #f87171; font-family: monospace; line-height: 1.7; max-width: 480px;
+      margin: 100px auto;
+    }
+    /* Barre d'info en haut */
+    #jt-bar {
+      display: none;
+      position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+      background: #1e1b4b; color: #c7d2fe;
+      font-family: system-ui, sans-serif; font-size: 12px;
+      padding: 6px 16px; align-items: center; gap: 12px;
+      border-bottom: 2px solid #6366f1;
+    }
+    #jt-bar .brand {
+      background: #6366f1; color: #fff;
+      padding: 2px 8px; border-radius: 4px; font-weight: 600;
+      flex-shrink: 0;
+    }
+    #jt-bar .date { flex-shrink: 0; }
+    #jt-bar .url  { color: #818cf8; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    /* Iframe prend tout l'espace sous la barre */
+    #jt-frame {
+      display: none;
+      position: fixed;
+      top: 32px; left: 0; right: 0; bottom: 0;
+      border: none; width: 100%; height: calc(100vh - 32px);
+      background: #fff;
+    }
+  </style>
+</head>
+<body>
+  <div id="jt-loading">
+    <span>JobTracker</span>
+    <div class="spinner"></div>
+    <p id="jt-status">Chargement du snapshot...</p>
+  </div>
+  <div id="jt-error"></div>
+  <div id="jt-bar">
+    <span class="brand">JobTracker</span>
+    <span class="date" id="jt-bar-date"></span>
+    <span class="url"  id="jt-bar-url"></span>
+  </div>
+  <iframe id="jt-frame"
+    sandbox="allow-same-origin allow-popups allow-forms allow-scripts"
+  ></iframe>
+  <script src="snapshot-viewer.js"></script>
+</body>
+</html>

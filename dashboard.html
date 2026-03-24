@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JobTracker — Suivi des candidatures</title>
+  <link rel="icon" type="image/x-icon" href="icon128.ico">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #09090e;
+      --bg2: #0f0f16;
+      --surface: #141420;
+      --surface2: #1c1c2a;
+      --border: #22223a;
+      --border2: #2e2e4a;
+      --accent: #6366f1;
+      --accent2: #818cf8;
+      --accent-glow: rgba(99,102,241,0.15);
+      --text: #e2e2f0;
+      --text2: #9090b8;
+      --text3: #5a5a80;
+      --success: #34d399;
+      --success-bg: rgba(52,211,153,0.1);
+      --danger: #f87171;
+      --warning: #fbbf24;
+      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+    }
+
+    html, body {
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    /* ── Layout ── */
+    .page {
+      max-width: 1300px;
+      margin: 0 auto;
+      padding: 40px 32px 80px;
+    }
+
+    /* ── Header ── */
+    .site-header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      margin-bottom: 40px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    .brand {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .brand-name {
+      font-family: var(--mono);
+      font-size: 22px;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: -0.01em;
+    }
+    .brand-name em {
+      color: var(--accent2);
+      font-style: normal;
+    }
+    .brand-sub {
+      font-size: 12px;
+      color: var(--text3);
+      font-family: var(--mono);
+      letter-spacing: 0.06em;
+    }
+    .header-actions { display: flex; gap: 10px; align-items: center; }
+
+    /* ── Stats strip ── */
+    .stats-strip {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .stat-label {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--text3);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .stat-value {
+      font-family: var(--mono);
+      font-size: 28px;
+      font-weight: 600;
+      color: var(--text);
+      line-height: 1;
+    }
+    .stat-value.accent { color: var(--accent2); }
+    .stat-value.success { color: var(--success); }
+
+    /* ── Toolbar ── */
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .search-box {
+      flex: 1;
+      min-width: 220px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 14px;
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .search-box::placeholder { color: var(--text3); }
+    .search-box:focus { border-color: var(--accent); }
+
+    /* ── Buttons ── */
+    .btn {
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      padding: 8px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.15s, transform 0.1s;
+      white-space: nowrap;
+    }
+    .btn:active { transform: scale(0.97); }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { opacity: 0.85; }
+    .btn-ghost {
+      background: var(--surface);
+      color: var(--text2);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { color: var(--text); border-color: var(--border2); }
+    .btn-danger-ghost {
+      background: transparent;
+      color: var(--danger);
+      border: 1px solid rgba(248,113,113,0.3);
+    }
+    .btn-danger-ghost:hover { background: rgba(248,113,113,0.08); }
+
+    /* ── Table ── */
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 900px;
+    }
+    thead {
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      text-align: left;
+      padding: 12px 14px;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--text3);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      user-select: none;
+      white-space: nowrap;
+    }
+    th.sortable { cursor: pointer; }
+    th.sortable:hover { color: var(--text2); }
+    th .sort-arrow { margin-left: 4px; opacity: 0.4; display: inline-block; transition: opacity 0.1s; }
+    th.sorted .sort-arrow { opacity: 1; color: var(--accent2); }
+
+    tbody tr {
+      border-bottom: 1px solid var(--border);
+      transition: background 0.1s;
+    }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: var(--surface2); }
+    tbody tr.applied-both { background: rgba(52,211,153,0.04); }
+
+    td {
+      padding: 12px 14px;
+      font-size: 13px;
+      color: var(--text);
+      vertical-align: middle;
+    }
+
+    .td-company { font-weight: 500; color: var(--text); }
+    .td-title   { color: var(--text2); }
+    .td-ref     { font-family: var(--mono); font-size: 11px; color: var(--text3); }
+    .td-loc     { font-size: 12px; color: var(--text3); }
+    .td-date    { font-family: var(--mono); font-size: 11px; color: var(--text3); white-space: nowrap; }
+
+    /* URL link */
+    .td-url a {
+      color: var(--accent2);
+      text-decoration: none;
+      font-family: var(--mono);
+      font-size: 11px;
+      max-width: 140px;
+      display: inline-block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+    .td-url a:hover { text-decoration: underline; }
+
+    /* Applied toggle cell */
+    .td-applied { text-align: center; }
+    .apply-toggle {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 6px;
+      transition: background 0.15s;
+      border: none;
+      background: none;
+    }
+    .apply-toggle:hover { background: var(--surface2); }
+    .apply-icon {
+      width: 26px; height: 26px;
+      border-radius: 50%;
+      border: 2px solid var(--border2);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px;
+      transition: border-color 0.15s, background 0.15s, transform 0.15s;
+    }
+    .apply-toggle.active .apply-icon {
+      background: var(--success-bg);
+      border-color: var(--success);
+      transform: scale(1.05);
+    }
+    .apply-date {
+      font-family: var(--mono);
+      font-size: 9px;
+      color: var(--success);
+      opacity: 0;
+      white-space: nowrap;
+      transition: opacity 0.2s;
+      max-width: 70px;
+      text-align: center;
+      line-height: 1.2;
+    }
+    .apply-toggle.active .apply-date { opacity: 1; }
+
+    /* Delete button */
+    .btn-del {
+      background: none;
+      border: none;
+      color: var(--text3);
+      cursor: pointer;
+      font-size: 14px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      transition: color 0.15s, background 0.15s;
+    }
+    .btn-del:hover { color: var(--danger); background: rgba(248,113,113,0.1); }
+
+    /* Ligne refusée */
+    tbody tr.row-rejected { background: rgba(248,113,113,0.05); }
+    tbody tr.row-rejected:hover { background: rgba(248,113,113,0.1); }
+    tbody tr.row-rejected .apply-toggle.active .apply-icon {
+      background: rgba(248,113,113,0.15);
+      border-color: var(--danger);
+    }
+
+    /* Bouton PDF */
+    .btn-snap {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 15px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      opacity: 0.35;
+      transition: opacity 0.15s;
+    }
+    .btn-snap.btn-snap-ok  { opacity: 0.85; }
+    .btn-snap.btn-snap-none:hover { opacity: 0.6; }
+    .btn-snap.btn-snap-ok:hover   { opacity: 1; }
+
+    /* Empty state */
+    .empty-state {
+      text-align: center;
+      padding: 80px 20px;
+      color: var(--text3);
+    }
+    .empty-icon { font-size: 40px; margin-bottom: 16px; opacity: 0.4; }
+    .empty-title {
+      font-family: var(--mono);
+      font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 6px;
+      color: var(--text2);
+    }
+    .empty-sub { font-size: 12px; }
+
+    /* Badge count */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--accent-glow);
+      color: var(--accent2);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 12px;
+      border: 1px solid rgba(99,102,241,0.3);
+    }
+
+    /* Confirm overlay */
+    .overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.7);
+      backdrop-filter: blur(4px);
+      display: none; align-items: center; justify-content: center;
+      z-index: 1000;
+    }
+    .overlay.show { display: flex; }
+    .dialog {
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 12px;
+      padding: 28px 32px;
+      max-width: 360px;
+      text-align: center;
+    }
+    .dialog h3 { font-size: 16px; margin-bottom: 8px; }
+    .dialog p { font-size: 13px; color: var(--text2); margin-bottom: 24px; }
+    .dialog-btns { display: flex; gap: 10px; justify-content: center; }
+
+    /* Toast */
+    .toast {
+      position: fixed;
+      bottom: 24px; left: 50%; transform: translateX(-50%) translateY(16px);
+      background: var(--success);
+      color: #0a1a12;
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 500;
+      padding: 9px 20px;
+      border-radius: 20px;
+      opacity: 0;
+      transition: opacity 0.2s, transform 0.2s;
+      pointer-events: none;
+      z-index: 999;
+    }
+    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .toast.err { background: var(--danger); color: #1a0505; }
+
+    /* Import modal */
+    .upload-zone {
+      position: relative;
+      border: 2px dashed var(--border2);
+      border-radius: 8px;
+      padding: 24px 16px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      margin-bottom: 8px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+    .upload-zone:hover, .upload-zone.drag-over {
+      border-color: var(--accent);
+      background: var(--accent-glow);
+    }
+    .upload-zone.has-file {
+      border-color: var(--success);
+      background: rgba(52,211,153,0.06);
+    }
+    .upload-zone input[type=file] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+    .upload-zone svg {
+      width: 28px; height: 28px;
+      color: var(--text3);
+      transition: color 0.15s;
+    }
+    .upload-zone:hover svg, .upload-zone.has-file svg { color: var(--accent2); }
+    .upload-zone.has-file svg { color: var(--success); }
+    #uploadLabel {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text2);
+    }
+    .upload-zone.has-file #uploadLabel { color: var(--success); }
+    #uploadHint {
+      font-size: 11px;
+      color: var(--text3);
+      font-family: var(--mono);
+    }
+    /* Bulle d'alerte fichier requis */
+    .upload-required {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--warning);
+      background: rgba(251,191,36,0.08);
+      border: 1px solid rgba(251,191,36,0.25);
+      border-radius: 6px;
+      padding: 7px 10px;
+      margin-bottom: 10px;
+      animation: jt-shake 0.35s ease;
+    }
+    .upload-required.show { display: flex; }
+    .upload-required svg { width: 14px; height: 14px; flex-shrink: 0; }
+    @keyframes jt-shake {
+      0%,100% { transform: translateX(0); }
+      25%      { transform: translateX(-4px); }
+      75%      { transform: translateX(4px); }
+    }
+
+    /* Import modal */
+    .import-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.75);
+      backdrop-filter: blur(4px);
+      display: none; align-items: center; justify-content: center;
+      z-index: 1001;
+    }
+    .import-overlay.show { display: flex; }
+    .import-dialog {
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 12px;
+      padding: 28px 32px;
+      max-width: 420px;
+      width: 90%;
+    }
+    .import-dialog h3 { font-size: 16px; margin-bottom: 8px; }
+    .import-dialog p  { font-size: 13px; color: var(--text2); margin-bottom: 6px; }
+    .import-options {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin: 18px 0 24px;
+    }
+    .import-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .import-option:hover { border-color: var(--accent); background: var(--accent-glow); }
+    .import-option input[type=radio] { margin-top: 2px; accent-color: var(--accent); }
+    .import-option-label { font-size: 13px; font-weight: 500; }
+    .import-option-desc  { font-size: 11px; color: var(--text3); margin-top: 2px; }
+    .import-dialog-btns  { display: flex; gap: 10px; justify-content: flex-end; }
+    .import-info {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--accent2);
+      background: var(--accent-glow);
+      border: 1px solid rgba(99,102,241,0.2);
+      border-radius: 6px;
+      padding: 8px 12px;
+      margin-bottom: 16px;
+      display: none;
+    }
+    .import-info.show { display: block; }
+
+    @media (max-width: 760px) {
+      .page { padding: 20px 16px 60px; }
+      .stats-strip { grid-template-columns: repeat(3, 1fr); }
+      .site-header { flex-direction: column; gap: 16px; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="page">
+
+  <!-- Header -->
+  <header class="site-header">
+    <div class="brand">
+      <div class="brand-name">job_<em>tracker</em></div>
+      <div class="brand-sub">suivi des candidatures</div>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-ghost" id="btnExportJson" title="Exporter toutes les données en JSON (sauvegarde complète)">↓ JSON</button>
+      <button class="btn btn-ghost" id="btnImportJson" title="Importer un fichier JSON exporté précédemment">↑ Importer</button>
+      <button class="btn btn-ghost" id="btnExport">↓ CSV</button>
+      <button class="btn btn-danger-ghost" id="btnClearAll">Tout effacer</button>
+    </div>
+  </header>
+
+  <!-- Stats -->
+  <div class="stats-strip">
+    <div class="stat-card">
+      <span class="stat-label">Annonces sauvegardées</span>
+      <span class="stat-value" id="statTotal">0</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Postulé en ligne</span>
+      <span class="stat-value success" id="statOnline">0</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Postulé par mail</span>
+      <span class="stat-value success" id="statMail">0</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Refusé</span>
+      <span class="stat-value" style="color:var(--danger)" id="statRejected">0</span>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Sans candidature</span>
+      <span class="stat-value accent" id="statPending">0</span>
+    </div>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <input class="search-box" id="searchBox" type="text" placeholder="Rechercher entreprise, poste, ref…">
+    <span class="badge" id="countBadge">0</span>
+  </div>
+
+  <!-- Table -->
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th class="sortable" data-col="company">Entreprise <span class="sort-arrow">↕</span></th>
+          <th class="sortable" data-col="title">Poste <span class="sort-arrow">↕</span></th>
+          <th class="sortable" data-col="location">Lieu <span class="sort-arrow">↕</span></th>
+          <th>Référence</th>
+          <th>URL</th>
+          <th class="sortable" data-col="savedAt">Sauvegardée <span class="sort-arrow">↕</span></th>
+          <th class="sortable" data-col="appliedOnline" title="Trier : oui d'abord puis par date">En ligne <span class="sort-arrow">↕</span></th>
+          <th class="sortable" data-col="appliedMail" title="Trier : oui d'abord puis par date">Par mail <span class="sort-arrow">↕</span></th>
+          <th class="sortable" data-col="rejected" title="Trier : refus d'abord puis par date">Refus <span class="sort-arrow">↕</span></th>
+          <th title="Capture de la page">📷</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="jobsBody"></tbody>
+    </table>
+    <div class="empty-state" id="emptyState" style="display:none;">
+      <div class="empty-icon">🗂️</div>
+      <div class="empty-title">Aucune annonce sauvegardée</div>
+      <div class="empty-sub">Utilisez l'extension sur une page d'offre d'emploi pour commencer.</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Confirm dialog -->
+<div class="overlay" id="overlay">
+  <div class="dialog">
+    <h3>Tout effacer ?</h3>
+    <p>Cette action supprimera définitivement toutes vos annonces sauvegardées.</p>
+    <div class="dialog-btns">
+      <button class="btn btn-ghost" id="dlgCancel">Annuler</button>
+      <button class="btn btn-danger-ghost" id="dlgConfirm">Supprimer tout</button>
+    </div>
+  </div>
+</div>
+
+<!-- Import modal -->
+<div class="import-overlay" id="importOverlay">
+  <div class="import-dialog">
+    <h3>Importer des candidatures</h3>
+
+    <!-- Zone upload : input caché + bouton + zone drag & drop -->
+    <input type="file" id="importFileInput" accept=".json" style="display:none">
+    <div class="upload-zone" id="uploadZone">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+      <button class="btn btn-ghost" id="btnChooseFile" type="button" style="pointer-events:auto">Choisir un fichier JSON</button>
+      <span id="uploadLabel" style="display:none"></span>
+      <span id="uploadHint">ou glisser-déposer ici</span>
+    </div>
+    <!-- Bulle d'alerte : fichier requis -->
+    <div class="upload-required" id="uploadRequired">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      Veuillez d'abord charger un fichier JSON
+    </div>
+
+    <div class="import-info" id="importInfo"></div>
+    <div class="import-options">
+      <label class="import-option">
+        <input type="radio" name="importMode" value="merge" checked>
+        <div>
+          <div class="import-option-label">Fusionner</div>
+          <div class="import-option-desc">Ajoute les nouvelles entrées, conserve les existantes. Les doublons (même ID) sont ignorés.</div>
+        </div>
+      </label>
+      <label class="import-option">
+        <input type="radio" name="importMode" value="replace">
+        <div>
+          <div class="import-option-label">Remplacer</div>
+          <div class="import-option-desc">Efface toutes les données actuelles et les remplace par le fichier importé.</div>
+        </div>
+      </label>
+    </div>
+    <div class="import-dialog-btns">
+      <button class="btn btn-ghost" id="importCancel">Annuler</button>
+      <button class="btn btn-primary" id="importConfirm">Importer</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="snapshot-db.js"></script>
+<script src="dashboard.js"></script>
+</body>
+</html>

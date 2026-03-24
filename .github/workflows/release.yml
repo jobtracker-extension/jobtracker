@@ -1,0 +1,25 @@
+name: Build and attach release ZIP
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build ZIP
+        run: |
+          zip -r jobtracker-extension.zip . -x ".github/*" ".github/**" ".git/*" ".git/**"
+
+      - name: Attach ZIP to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: jobtracker-extension.zip
+          body_path: RELEASE_NOTES.md

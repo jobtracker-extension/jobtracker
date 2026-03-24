@@ -1,0 +1,14 @@
+/* JobTracker — styles injectés dans la page */
+
+.jt-selecting,
+.jt-selecting * {
+  cursor: crosshair !important;
+}
+
+.jt-hover {
+  outline: 2px solid #6366f1 !important;
+  outline-offset: 2px !important;
+  background-color: rgba(99, 102, 241, 0.08) !important;
+  border-radius: 3px !important;
+  transition: outline 0.08s ease, background-color 0.08s ease !important;
+}

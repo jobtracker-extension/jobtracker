@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JobTracker</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:           #0f0f13;
+      --surface:      #1a1a22;
+      --border:       #2a2a38;
+      --accent:       #6366f1;
+      --accent-glow:  rgba(99,102,241,0.2);
+      --text:         #e8e8f0;
+      --muted:        #7070a0;
+      --success:      #34d399;
+      --danger:       #f87171;
+      --font:         -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --mono:         ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+    }
+
+    /* ── Base : occupe tout le panneau ── */
+    html, body {
+      width: 100%;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      overflow-x: hidden;
+    }
+
+    /* ── Header ── */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 16px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+    .logo { display: flex; align-items: center; gap: 8px; }
+    .logo-dot {
+      flex-shrink: 0;
+      width: 9px; height: 9px;
+      background: var(--accent);
+      border-radius: 50%;
+      box-shadow: 0 0 8px var(--accent);
+    }
+    .logo-text {
+      font-family: var(--mono);
+      font-size: 14px;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+      color: var(--text);
+    }
+    .btn-dashboard {
+      flex-shrink: 0;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+      background: none;
+      border: 1px solid var(--border);
+      padding: 5px 10px;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .btn-dashboard:hover { color: var(--text); border-color: var(--accent); }
+
+    /* ── Form ── */
+    .form {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .field-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      width: 100%;
+    }
+
+    .field-label {
+      font-size: 10px;
+      font-family: var(--mono);
+      color: var(--muted);
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+    }
+
+    /* La ligne input + bouton prend toute la largeur disponible */
+    .field-row {
+      display: flex;
+      gap: 6px;
+      align-items: stretch;
+      width: 100%;
+      min-width: 0;        /* empêche flex de déborder */
+    }
+
+    .field-input {
+      flex: 1 1 0;         /* grandit, rétrécit, base 0 */
+      min-width: 0;        /* évite que le texte force un dépassement */
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 9px 12px;
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .field-input::placeholder { color: var(--muted); }
+    .field-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px var(--accent-glow);
+    }
+    .field-input.filled   { border-color: #3a3a55; }
+    .field-input[readonly]{ color: var(--muted); font-family: var(--mono); font-size: 11px; }
+    .field-input.picking  {
+      border-color: var(--accent);
+      animation: pulse-border 1s ease-in-out infinite;
+    }
+    @keyframes pulse-border {
+      0%,100% { box-shadow: 0 0 0 2px var(--accent-glow); }
+      50%     { box-shadow: 0 0 0 4px rgba(99,102,241,0.35); }
+    }
+
+    /* Bouton viseur — taille fixe, jamais écrasé */
+    .btn-pick {
+      flex: 0 0 38px;      /* ne grandit pas, ne rétrécit pas */
+      width: 38px;
+      height: 38px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      padding: 0;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .btn-pick svg {
+      width: 18px; height: 18px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+    }
+    .btn-pick:hover  { color: var(--accent); border-color: var(--accent); background: var(--accent-glow); }
+    .btn-pick.active { color: var(--accent); border-color: var(--accent); background: var(--accent-glow); }
+
+    /* ── Divider ── */
+    .divider { height: 1px; background: var(--border); margin: 2px 0; }
+
+    /* ── Status bar ── */
+    .status-bar {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+      padding: 8px 16px;
+      border-top: 1px solid var(--border);
+      line-height: 1.4;
+    }
+
+    /* ── Footer ── */
+    .footer {
+      padding: 0 16px 20px;
+      display: flex;
+      gap: 8px;
+    }
+    .btn-save {
+      flex: 1;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      padding: 11px;
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 0.05em;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    .btn-save:hover  { opacity: 0.88; }
+    .btn-save:active { transform: scale(0.98); }
+
+    .btn-clear {
+      flex: 0 0 42px;
+      background: var(--surface);
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      font-size: 16px;
+      cursor: pointer;
+      transition: color 0.15s, border-color 0.15s;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .btn-clear:hover { color: var(--danger); border-color: var(--danger); }
+
+    /* ── Toast ── */
+    .toast {
+      position: fixed;
+      bottom: 16px; left: 50%;
+      transform: translateX(-50%) translateY(16px);
+      background: var(--success);
+      color: #0a160f;
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 500;
+      padding: 8px 18px;
+      border-radius: 20px;
+      opacity: 0;
+      transition: opacity 0.2s, transform 0.2s;
+      pointer-events: none;
+      white-space: nowrap;
+      z-index: 999;
+    }
+    .toast.show  { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .toast.error { background: var(--danger); color: #1a0505; }
+
+    /* ── Tooltip URL ── */
+    .url-wrapper { position: relative; width: 100%; }
+    .url-tooltip {
+      display: none !important;
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 0; right: 0;
+      background: #12121e;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--accent2);
+      word-break: break-all;
+      line-height: 1.6;
+      z-index: 9999;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+      pointer-events: none;
+    }
+    .url-tooltip.visible { display: block !important; }
+    .url-tooltip::after {
+      content: '';
+      position: absolute;
+      top: 100%; left: 12px;
+      border: 5px solid transparent;
+      border-top-color: #2a2a3a;
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">
+    <div class="logo-dot"></div>
+    <span class="logo-text">job_tracker</span>
+  </div>
+  <button class="btn-dashboard" id="openDashboard">&#x2197; Suivi</button>
+</div>
+
+<div class="form">
+
+  <div class="field-group">
+    <label class="field-label">Entreprise</label>
+    <div class="field-row">
+      <input class="field-input" id="f-company" type="text" placeholder="Nom de l'entreprise...">
+      <button class="btn-pick" data-field="company" title="Selectionner sur la page">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/>
+          <line x1="12" y1="2"  x2="12" y2="7"/>
+          <line x1="12" y1="17" x2="12" y2="22"/>
+          <line x1="2"  y1="12" x2="7"  y2="12"/>
+          <line x1="17" y1="12" x2="22" y2="12"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="field-group">
+    <label class="field-label">Localisation</label>
+    <div class="field-row">
+      <input class="field-input" id="f-location" type="text" placeholder="Ville, region...">
+      <button class="btn-pick" data-field="location" title="Selectionner sur la page">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/>
+          <line x1="12" y1="2"  x2="12" y2="7"/>
+          <line x1="12" y1="17" x2="12" y2="22"/>
+          <line x1="2"  y1="12" x2="7"  y2="12"/>
+          <line x1="17" y1="12" x2="22" y2="12"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="field-group">
+    <label class="field-label">Intitule de poste</label>
+    <div class="field-row">
+      <input class="field-input" id="f-title" type="text" placeholder="Ex : Developpeur fullstack...">
+      <button class="btn-pick" data-field="title" title="Selectionner sur la page">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/>
+          <line x1="12" y1="2"  x2="12" y2="7"/>
+          <line x1="12" y1="17" x2="12" y2="22"/>
+          <line x1="2"  y1="12" x2="7"  y2="12"/>
+          <line x1="17" y1="12" x2="22" y2="12"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="field-group">
+    <label class="field-label">Reference annonce</label>
+    <div class="field-row">
+      <input class="field-input" id="f-ref" type="text" placeholder="Code / ID annonce...">
+      <button class="btn-pick" data-field="ref" title="Selectionner sur la page">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/>
+          <line x1="12" y1="2"  x2="12" y2="7"/>
+          <line x1="12" y1="17" x2="12" y2="22"/>
+          <line x1="2"  y1="12" x2="7"  y2="12"/>
+          <line x1="17" y1="12" x2="22" y2="12"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="field-group">
+    <label class="field-label">URL de l'annonce</label>
+    <div class="url-wrapper">
+      <input class="field-input" id="f-url" type="text" readonly placeholder="Recuperation automatique..." style="width:100%;flex:none;">
+      <div class="url-tooltip" id="url-tooltip"></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="status-bar" id="statusBar">Pret — cliquez le viseur pour pointer un element</div>
+
+<div class="footer">
+  <button class="btn-clear" id="btnClear" title="Effacer le formulaire">&#x21BA;</button>
+  <button class="btn-save" id="btnSave">Sauvegarder l'annonce</button>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="popup.js"></script>
+</body>
+</html>
