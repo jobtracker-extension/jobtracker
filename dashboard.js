@@ -10,6 +10,7 @@ async function loadJobs() {
     const res = await chrome.storage.local.get('jobs');
     jobs = res.jobs || [];
     render();
+    purgeOrphanedSnapshots(jobs);
   } catch(e) {
     showDiag('Erreur au chargement : ' + e.message);
   }
@@ -48,8 +49,15 @@ function sortJobs(arr) {
     if (sortCol === 'appliedOnline') return compareApplied(a, b, 'appliedOnline', 'appliedOnlineAt');
     if (sortCol === 'appliedMail')   return compareApplied(a, b, 'appliedMail',   'appliedMailAt');
     if (sortCol === 'rejected')      return compareApplied(a, b, 'rejected',      'rejectedAt');
-    const va = a[sortCol] || '';
-    const vb = b[sortCol] || '';
+    let va, vb;
+    if (sortCol === 'url') {
+      // Trier par domaine puis chemin pour regrouper les entrées d'un même site
+      try { va = new URL(a.url).hostname.replace('www.','') + new URL(a.url).pathname; } catch(e) { va = a.url || ''; }
+      try { vb = new URL(b.url).hostname.replace('www.','') + new URL(b.url).pathname; } catch(e) { vb = b.url || ''; }
+    } else {
+      va = a[sortCol] || '';
+      vb = b[sortCol] || '';
+    }
     if (va < vb) return -sortDir;
     if (va > vb) return sortDir;
     return 0;
@@ -126,10 +134,12 @@ function renderTable(rows) {
     // Bouton PDF
     // Accepter screenshotId ou snapshotId (compatibilité import)
     var captureId = j.screenshotId || j.snapshotId || null;
+    var sizeStr   = j.snapshotSize ? fmtSnapSize(j.snapshotSize) : '';
+    var sizeSpan  = sizeStr ? ' <span class="snap-size">' + sizeStr + '</span>' : '';
     var ssBtn = captureId
-      ? '<button class="btn-snap btn-snap-ok" data-id="' + j.id + '" title="Voir la capture de la page">📷</button>'
+      ? '<button class="btn-snap btn-snap-ok" data-id="' + j.id + '" title="Voir la capture de la page">📷' + sizeSpan + '</button>'
       : '<button class="btn-snap btn-snap-none" data-id="' + j.id + '" title="Pas de capture — sauvegardez depuis la page">📷</button>';
-    var snapBtn = '';
+
 
     return '<tr class="' + rowClass + '" data-id="' + j.id + '">' +
       '<td class="td-company">' + esc(j.company  || '—') + '</td>' +
@@ -142,17 +152,27 @@ function renderTable(rows) {
       '<td class="td-applied">' + applyToggleHtml(j, 'appliedMail',   'appliedMailAt')   + '</td>' +
       '<td class="td-applied">' + applyToggleHtml(j, 'rejected',      'rejectedAt')      + '</td>' +
       '<td class="td-pdf">'     + ssBtn + '</td>' +
-      '<td><button class="btn-del" data-id="' + j.id + '" title="Supprimer">✕</button></td>' +
+      '<td class="td-actions">' +
+        '<button class="btn-edit" data-id="' + j.id + '" title="Modifier">✏️</button>' +
+        '<button class="btn-del"  data-id="' + j.id + '" title="Supprimer">✕</button>' +
+      '</td>' +
       '</tr>';
   }).join('');
 }
 
 // ─── Clics tableau ────────────────────────────────────────────────────────────
 document.getElementById('jobsBody').addEventListener('click', async (e) => {
-  const toggle  = e.target.closest('.apply-toggle');
-  const del     = e.target.closest('.btn-del');
+  const toggle   = e.target.closest('.apply-toggle');
+  const del      = e.target.closest('.btn-del');
+  const edit     = e.target.closest('.btn-edit');
   const snapOk   = e.target.closest('.btn-snap-ok');
   const snapNone = e.target.closest('.btn-snap-none');
+
+  if (edit) {
+    const job = jobs.find(j => j.id === edit.dataset.id);
+    if (job) openEditModal(job);
+    return;
+  }
 
   if (snapOk) {
     const job = jobs.find(j => j.id === snapOk.dataset.id);
@@ -196,6 +216,41 @@ document.getElementById('jobsBody').addEventListener('click', async (e) => {
 
 });
 
+// ─── Edit modal ───────────────────────────────────────────────────────────────
+let _editJobId = null;
+
+function openEditModal(job) {
+  _editJobId = job.id;
+  document.getElementById('editCompany').value  = job.company  || '';
+  document.getElementById('editTitle').value    = job.title    || '';
+  document.getElementById('editLocation').value = job.location || '';
+  document.getElementById('editRef').value      = job.ref      || '';
+  document.getElementById('editOverlay').classList.add('show');
+  document.getElementById('editCompany').focus();
+}
+
+document.getElementById('editCancel').addEventListener('click', () => {
+  document.getElementById('editOverlay').classList.remove('show');
+});
+
+document.getElementById('editOverlay').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('editOverlay'))
+    document.getElementById('editOverlay').classList.remove('show');
+});
+
+document.getElementById('editConfirm').addEventListener('click', async () => {
+  const job = jobs.find(j => j.id === _editJobId);
+  if (!job) return;
+  job.company  = document.getElementById('editCompany').value.trim();
+  job.title    = document.getElementById('editTitle').value.trim();
+  job.location = document.getElementById('editLocation').value.trim();
+  job.ref      = document.getElementById('editRef').value.trim();
+  await chrome.storage.local.set({ jobs });
+  document.getElementById('editOverlay').classList.remove('show');
+  showToast('Annonce mise a jour ✓');
+  render();
+});
+
 // ─── Tri ──────────────────────────────────────────────────────────────────────
 document.querySelectorAll('th.sortable').forEach(th => {
   th.addEventListener('click', () => {
@@ -233,46 +288,58 @@ document.getElementById('btnExport').addEventListener('click', () => {
 });
 
 // ─── Export JSON ──────────────────────────────────────────────────────────────
+// Export en streaming via showSaveFilePicker pour éviter les OOM sur
+// les grandes collections : les snapshots sont écrits un par un sans
+// jamais tout charger en mémoire simultanément.
 document.getElementById('btnExportJson').addEventListener('click', async () => {
   if (!jobs.length) { showToast('Aucune donnee a exporter.', true); return; }
-  showToast("Preparation de l'export (snapshots inclus)...");
+
+  let fileHandle;
+  try {
+    fileHandle = await window.showSaveFilePicker({
+      suggestedName: 'jobtracker_backup_' + new Date().toISOString().slice(0,10) + '.json',
+      types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
+    });
+  } catch (e) {
+    if (e.name !== 'AbortError') showToast('Export annule.', true);
+    return;
+  }
+
+  showToast("Preparation de l'export...");
+  await purgeOrphanedSnapshots(jobs);
+
   const { schemaVersion } = await chrome.storage.local.get('schemaVersion');
+  const snapshotIds = await SnapshotDB.getAllIds();
 
-  // Récupérer tous les snapshots depuis IndexedDB
-  const snapshots = await getAllSnapshots();
+  const writable = await fileHandle.createWritable();
+  const enc = new TextEncoder();
+  const write = (str) => writable.write(enc.encode(str));
 
-  const payload = {
-    _meta: {
+  try {
+    const meta = {
       source: 'JobTracker', schemaVersion: schemaVersion || 2,
       exportedAt: new Date().toISOString(), count: jobs.length,
-      snapshotCount: snapshots.length,
-    },
-    jobs,
-    snapshots,
-  };
-  // Encoder les snapshots HTML en base64 pour réduire la taille du JSON
-  // et éviter les problèmes de caractères spéciaux
-  const snapshotsEncoded = snapshots.map(function(s) {
-    try {
-      return Object.assign({}, s, {
-        html: btoa(unescape(encodeURIComponent(s.html))),
-        _encoded: true,
-      });
-    } catch(e) {
-      // Si btoa échoue (caractères hors ASCII), stocker tel quel
-      return s;
-    }
-  });
-  payload.snapshots = snapshotsEncoded;
+      snapshotCount: snapshotIds.length,
+    };
+    await write('{"_meta":' + JSON.stringify(meta));
+    await write(',"jobs":' + JSON.stringify(jobs));
+    await write(',"snapshots":[');
 
-  const jsonStr = JSON.stringify(payload);
-  const blob = new Blob([jsonStr], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'jobtracker_backup_' + new Date().toISOString().slice(0,10) + '.json';
-  a.click();
-  var totalMB = (jsonStr.length / 1024 / 1024).toFixed(1);
-  showToast('Export : ' + jobs.length + ' annonces, ' + snapshots.length + ' snapshots (' + totalMB + ' MB)');
+    let first = true;
+    for (const id of snapshotIds) {
+      const snap = await SnapshotDB.get(id);
+      if (!snap) continue;
+      await write((first ? '' : ',') + JSON.stringify(snap));
+      first = false;
+    }
+
+    await write(']}');
+    await writable.close();
+    showToast('Export : ' + jobs.length + ' annonces, ' + snapshotIds.length + ' snapshots');
+  } catch (err) {
+    await writable.abort();
+    showToast('Erreur export : ' + err.message, true);
+  }
 });
 
 // ─── Import JSON ──────────────────────────────────────────────────────────────
@@ -325,6 +392,7 @@ function handleImportFile(file) {
         // Normaliser : accepter snapshotId ou screenshotId selon la version d'export
         screenshotId:    j.screenshotId    || j.snapshotId || null,
         snapshotId:      j.snapshotId      || j.screenshotId || null,
+        snapshotSize:    j.snapshotSize    || 0,
       }));
       pendingImportJobs = imported;
       // Stocker les snapshots pour les importer avec les jobs
@@ -419,6 +487,7 @@ document.getElementById('importConfirm').addEventListener('click', async () => {
   } else {
     console.log('[JobTracker] No snapshots to import (_pendingSnapshots:', window._pendingSnapshots, ')');
   }
+  await purgeOrphanedSnapshots(newJobs);
   render();
   document.getElementById('importOverlay').classList.remove('show');
 });
@@ -431,9 +500,8 @@ document.getElementById('dlgCancel').addEventListener('click', () => {
   document.getElementById('overlay').classList.remove('show');
 });
 document.getElementById('dlgConfirm').addEventListener('click', async () => {
-  // Supprimer tous les snapshots
-  const allSnapIds = [...jobs.map(j => j.snapshotId), ...jobs.map(j => j.screenshotId)].filter(Boolean);
-  if (allSnapIds.length) await deleteSnapshots(allSnapIds);
+  // Supprimer tous les snapshots (référencés + éventuels orphelins)
+  await purgeOrphanedSnapshots([]);
   jobs = [];
   await chrome.storage.local.set({ jobs });
   document.getElementById('overlay').classList.remove('show');
@@ -446,19 +514,15 @@ chrome.storage.onChanged.addListener((changes) => {
   if (changes.jobs) { jobs = changes.jobs.newValue || []; render(); }
 });
 
-// ─── Snapshots via background (IndexedDB dans l'origine extension) ───────────
-function openSnapshot(snapshotId) {
-  console.log('[JobTracker] openSnapshot called with id:', snapshotId);
-  // Vérifier que le snapshot existe avant d'ouvrir le viewer
-  chrome.runtime.sendMessage({ type: 'GET_SNAPSHOT', snapshotId: snapshotId }, function(res) {
-    console.log('[JobTracker] GET_SNAPSHOT response:', res && res.ok, 'snapshot found:', !!(res && res.snapshot));
-    if (!res || !res.ok || !res.snapshot) {
-      showToast('Snapshot introuvable en base (id: ' + snapshotId + ')', true);
-      return;
-    }
-    var viewerUrl = chrome.runtime.getURL('snapshot-viewer.html') + '?id=' + encodeURIComponent(snapshotId);
-    chrome.tabs.create({ url: viewerUrl });
-  });
+// ─── Snapshots via IndexedDB directe (même origine — évite la limite 64 MiB) ─
+async function openSnapshot(snapshotId) {
+  const snap = await SnapshotDB.get(snapshotId);
+  if (!snap) {
+    showToast('Snapshot introuvable en base (id: ' + snapshotId + ')', true);
+    return;
+  }
+  var viewerUrl = chrome.runtime.getURL('snapshot-viewer.html') + '?id=' + encodeURIComponent(snapshotId);
+  chrome.tabs.create({ url: viewerUrl });
 }
 
 function deleteSnapshot(id) {
@@ -491,20 +555,42 @@ function importSnapshots(snapshots, mode) {
     return Promise.resolve();
   }
   console.log('[JobTracker] importSnapshots: importing', snapshots.length, 'snapshots, mode=', mode);
-  // Vérifier que chaque snapshot a bien id et html
   var valid = snapshots.filter(function(s) { return s && s.id && s.html; });
   console.log('[JobTracker] importSnapshots: valid snapshots:', valid.length);
-  return new Promise(function(resolve) {
-    chrome.runtime.sendMessage({
-      type: 'IMPORT_SNAPSHOTS', snapshots: valid, replace: mode === 'replace'
-    }, function(res) {
-      console.log('[JobTracker] importSnapshots response:', res);
-      resolve();
-    });
-  });
+  if (!valid.length) return Promise.resolve();
+  // Écriture directe en IndexedDB — évite la limite de taille de sendMessage
+  // (même problème que pour le snapshot-viewer, corrigé de la même façon)
+  return SnapshotDB.importAll(valid);
+}
+
+// ─── Purge des snapshots orphelins ───────────────────────────────────────────
+// Supprime silencieusement les snapshots en IndexedDB qui ne sont référencés
+// par aucun job. Appelé à l'ouverture, à l'import et à l'export.
+async function purgeOrphanedSnapshots(jobList) {
+  try {
+    const allIds = await SnapshotDB.getAllIds();
+    if (!allIds.length) return;
+    const referenced = new Set(
+      jobList.flatMap(j => [j.screenshotId, j.snapshotId]).filter(Boolean)
+    );
+    const orphanIds = allIds.filter(id => !referenced.has(id));
+    if (orphanIds.length) {
+      await SnapshotDB.removeMany(orphanIds);
+      console.log('[JobTracker] purgeOrphanedSnapshots: supprime', orphanIds.length, 'orphelin(s)');
+    }
+  } catch(e) {
+    console.warn('[JobTracker] purgeOrphanedSnapshots error:', e);
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+function fmtSnapSize(chars) {
+  // chars est la longueur JS (UTF-16) du HTML — approximation de la taille en octets
+  if (!chars) return '';
+  if (chars < 1024 * 1024) return Math.round(chars / 1024) + ' KB';
+  return (chars / 1024 / 1024).toFixed(1) + ' MB';
+}
+
 function fmtDate(iso) {
   if (!iso) return '';
   const d = new Date(iso);

@@ -34,13 +34,13 @@ function showSnapshot(snap) {
 if (!snapshotId) {
   showError('Aucun snapshot spécifié.');
 } else {
-  chrome.runtime.sendMessage({ type: 'GET_SNAPSHOT', snapshotId: snapshotId }, function(res) {
-    if (!res || !res.ok || !res.snapshot) {
+  // Lecture directe en IndexedDB — même origine, pas de limite 64 MiB sendMessage
+  SnapshotDB.get(snapshotId).then(function(snap) {
+    if (!snap) {
       showError('Snapshot introuvable.<br>Vérifiez que l\'annonce a été sauvegardée depuis sa page.');
       return;
     }
 
-    var snap = res.snapshot;
     document.title = (snap.title || 'Snapshot') + ' — JobTracker';
 
     if (snap.isPng || (snap.html && snap.html.startsWith('data:image/'))) {
@@ -57,5 +57,7 @@ if (!snapshotId) {
     } else {
       showSnapshot(snap);
     }
+  }).catch(function(e) {
+    showError('Erreur de lecture du snapshot : ' + e.message);
   });
 }

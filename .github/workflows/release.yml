@@ -22,4 +22,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: jobtracker-extension.zip
-          body_path: RELEASE_NOTES.md
+          body_path: PATCH_NOTES.md

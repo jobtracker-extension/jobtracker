@@ -64,6 +64,17 @@ const SnapshotDB = (() => {
     });
   }
 
+  // Retourne uniquement les IDs de tous les snapshots (sans charger le HTML)
+  async function getAllIds() {
+    const db = await open();
+    return new Promise((resolve, reject) => {
+      const tx  = db.transaction(STORE, 'readonly');
+      const req = tx.objectStore(STORE).getAllKeys();
+      req.onsuccess = (e) => resolve(e.target.result || []);
+      req.onerror   = (e) => reject(e.target.error);
+    });
+  }
+
   // Export toutes les snapshots sous forme [{id, html, url, title, savedAt}]
   async function exportAll() {
     const db = await open();
@@ -87,5 +98,5 @@ const SnapshotDB = (() => {
     });
   }
 
-  return { save, get, remove, removeMany, exportAll, importAll };
+  return { save, get, remove, removeMany, getAllIds, exportAll, importAll };
 })();

@@ -66,10 +66,95 @@ function disableSelectMode() {
   document.removeEventListener('keydown', onKeyDown, true);
 }
 
+// ─── Notification de capture en cours ─────────────────────────────────────────
+function showCaptureNotif() {
+  if (document.getElementById('jt-capture-notif')) return;
+
+  const style = document.createElement('style');
+  style.id = 'jt-capture-style';
+  style.textContent = `
+    #jt-capture-notif {
+      position: fixed; bottom: 20px; right: 20px; z-index: 2147483647;
+      background: #1e293b; border: 1px solid #475569; border-radius: 8px;
+      font-family: system-ui, sans-serif; font-size: 13px; color: #e2e8f0;
+      padding: 12px 16px; display: flex; align-items: center; gap: 10px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4); max-width: 320px;
+      animation: jt-notif-in 0.25s ease;
+    }
+    @keyframes jt-notif-in {
+      from { transform: translateY(12px); opacity: 0; }
+      to   { transform: translateY(0);    opacity: 1; }
+    }
+    #jt-capture-spinner {
+      flex-shrink: 0; width: 16px; height: 16px;
+      border: 2px solid #475569; border-top-color: #60a5fa;
+      border-radius: 50%; animation: jt-spin 0.7s linear infinite;
+    }
+    @keyframes jt-spin { to { transform: rotate(360deg); } }
+  `;
+
+  const notif = document.createElement('div');
+  notif.id = 'jt-capture-notif';
+  notif.innerHTML =
+    '<span id="jt-capture-spinner"></span>' +
+    '<span id="jt-capture-msg">Capture en cours\u2026 Ne fermez pas cet onglet</span>';
+
+  document.documentElement.appendChild(style);
+  document.documentElement.appendChild(notif);
+}
+
+function updateCaptureNotif(ok, errorMsg) {
+  const notif   = document.getElementById('jt-capture-notif');
+  const spinner = document.getElementById('jt-capture-spinner');
+  const msgEl   = document.getElementById('jt-capture-msg');
+  if (!notif) return;
+
+  if (ok) {
+    notif.style.borderColor = '#22c55e';
+    if (spinner) {
+      spinner.style.animation  = 'none';
+      spinner.style.border     = 'none';
+      spinner.style.color      = '#22c55e';
+      spinner.style.fontSize   = '17px';
+      spinner.style.lineHeight = '16px';
+      spinner.textContent      = '✓';
+    }
+    if (msgEl) msgEl.textContent = 'Capture terminée';
+    setTimeout(removeCaptureNotif, 3000);
+  } else {
+    notif.style.borderColor = '#ef4444';
+    if (spinner) {
+      spinner.style.animation  = 'none';
+      spinner.style.border     = 'none';
+      spinner.style.color      = '#ef4444';
+      spinner.style.fontSize   = '15px';
+      spinner.style.lineHeight = '16px';
+      spinner.textContent      = '✕';
+    }
+    if (msgEl) msgEl.textContent = errorMsg || 'Erreur lors de la capture';
+    setTimeout(removeCaptureNotif, 5000);
+  }
+}
+
+function removeCaptureNotif() {
+  const notif = document.getElementById('jt-capture-notif');
+  const style = document.getElementById('jt-capture-style');
+  if (notif) {
+    notif.style.transition = 'opacity 0.25s';
+    notif.style.opacity    = '0';
+    setTimeout(() => { notif.remove(); if (style) style.remove(); }, 270);
+  } else if (style) {
+    style.remove();
+  }
+}
+
 // ─── Message listener ─────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg.type === 'START_SELECT') { enableSelectMode(msg.field); sendResponse({ ok: true }); }
-  if (msg.type === 'STOP_SELECT')  { disableSelectMode();         sendResponse({ ok: true }); }
+  if (msg.type === 'START_SELECT')    { enableSelectMode(msg.field); sendResponse({ ok: true }); }
+  if (msg.type === 'STOP_SELECT')     { disableSelectMode();         sendResponse({ ok: true }); }
+  if (msg.type === 'CAPTURE_STARTED') { showCaptureNotif();                           sendResponse({ ok: true }); }
+  if (msg.type === 'CAPTURE_DONE')    { updateCaptureNotif(true);                     sendResponse({ ok: true }); }
+  if (msg.type === 'CAPTURE_ERROR')   { updateCaptureNotif(false, msg.error);         sendResponse({ ok: true }); }
   return true;
 });
 
@@ -222,7 +307,11 @@ const JOB_ID_EXTRACTORS = [
   function(u) { return u.searchParams.get('jl') || null; },
   // Patterns dans le path
   function(u) { var m = u.pathname.match(/\/jobs\/(?:view\/)?(\d{6,})/);    return m ? m[1] : null; },
-  function(u) { var m = u.pathname.match(/\/offres?(?:-emploi)?\/([A-Z0-9]{4,})/i); return m ? m[1] : null; },
+  // Pattern "reference-ID" dans le path (ex: choisirleservicepublic.gouv.fr)
+  function(u) { var m = u.pathname.match(/[/-]reference[-_]([A-Z0-9][A-Z0-9_-]{3,})/i); return m ? m[1] : null; },
+  // ID alphanumérique après /offre(s)-emploi/ — doit contenir au moins un chiffre
+  // (évite de capturer des slugs descriptifs comme "ingenieur-analyste-...")
+  function(u) { var m = u.pathname.match(/\/offres?(?:-emploi)?\/([A-Z0-9]{4,})/i); return (m && /\d/.test(m[1])) ? m[1] : null; },
   function(u) { var m = u.pathname.match(/EXJOB_(\d+)/);                    return m ? m[1] : null; },
 ];
 
@@ -315,6 +404,124 @@ chrome.runtime.onMessage.addListener(function(msg, _sender, sendResponse) {
   return true; // async
 });
 
+// ─── Correspondance par référence annonce dans l'URL (cross-site) ────────────
+// Si le champ "ref" d'une offre sauvegardée apparaît dans l'URL courante,
+// on propose à l'utilisateur de confirmer que c'est la même offre.
+// Garde : ref ≥ 6 chars et contient au moins un chiffre (évite les faux positifs
+// sur des références génériques comme "CDI" ou "2024").
+function refMatchesUrl(job, currentUrl) {
+  if (!job.ref) return false;
+  const ref = job.ref.trim();
+  if (ref.length < 6 || !/\d/.test(ref)) return false;
+  try {
+    const decoded = decodeURIComponent(currentUrl).toLowerCase();
+    return decoded.includes(ref.toLowerCase());
+  } catch(e) {
+    return currentUrl.toLowerCase().includes(ref.toLowerCase());
+  }
+}
+
+function duplicateJobWithUrl(originalJob, newUrl) {
+  // Le background reçoit sender.tab.id — le content script ne peut pas le connaître.
+  // La création du job ET la capture MHTML sont donc gérées côté background.
+  const newId = Date.now().toString(36) + Math.random().toString(36).slice(2);
+  chrome.runtime.sendMessage({
+    type:        'DUPLICATE_JOB',
+    originalJob: originalJob,
+    newId:       newId,
+    newUrl:      newUrl,
+    pageTitle:   document.title || '',
+  });
+}
+
+function showPossibleDuplicateBanner(matchedJob, currentUrl) {
+  if (document.getElementById('jt-already-banner')) return;
+
+  const origUrl   = matchedJob.url || '';
+  const company   = matchedJob.company ? ' · ' + matchedJob.company : '';
+  const shortUrl  = origUrl.length > 90 ? origUrl.slice(0, 90) + '…' : origUrl;
+
+  const banner = document.createElement('div');
+  banner.id = 'jt-already-banner';
+  banner.innerHTML =
+    '<div id="jt-banner-inner">' +
+      '<span id="jt-banner-icon">?</span>' +
+      '<div id="jt-banner-text">' +
+        '<strong>Annonce peut-être déjà sauvegardée' + company + '</strong>' +
+        '<span>Postulé via&nbsp;<a id="jt-banner-orig-link" href="' + origUrl + '" target="_blank" rel="noopener">' + shortUrl + '</a></span>' +
+      '</div>' +
+      '<button id="jt-banner-yes">Oui, dupliquer</button>' +
+      '<button id="jt-banner-no">Non</button>' +
+      '<button id="jt-banner-close" title="Fermer">✕</button>' +
+    '</div>';
+
+  const style = document.createElement('style');
+  style.id = 'jt-banner-style';
+  style.textContent = `
+    #jt-already-banner {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 2147483647;
+      background: #451a03; border-bottom: 2px solid #f59e0b;
+      font-family: system-ui, sans-serif; font-size: 13px;
+      color: #fef3c7; padding: 0;
+      animation: jt-slide-down 0.3s ease;
+    }
+    @keyframes jt-slide-down {
+      from { transform: translateY(-100%); opacity: 0; }
+      to   { transform: translateY(0);     opacity: 1; }
+    }
+    #jt-banner-inner {
+      display: flex; align-items: center; gap: 12px;
+      max-width: 1200px; margin: 0 auto; padding: 10px 16px;
+    }
+    #jt-banner-icon {
+      flex-shrink: 0; width: 26px; height: 26px;
+      background: #f59e0b; color: #1c0a00; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; font-weight: 700;
+    }
+    #jt-banner-text { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+    #jt-banner-text strong { font-weight: 600; color: #fef3c7; }
+    #jt-banner-text span   { font-size: 12px; color: #fde68a; font-family: monospace; }
+    #jt-banner-text a      { color: #fde68a; text-decoration: underline; word-break: break-all; }
+    #jt-banner-yes {
+      flex-shrink: 0; background: #f59e0b; color: #1c0a00;
+      border: none; border-radius: 4px; padding: 4px 12px;
+      cursor: pointer; font-size: 12px; font-weight: 600;
+    }
+    #jt-banner-yes:hover { background: #fbbf24; }
+    #jt-banner-no {
+      flex-shrink: 0; background: none; border: 1px solid #f59e0b;
+      color: #f59e0b; border-radius: 4px; padding: 4px 12px;
+      cursor: pointer; font-size: 12px;
+    }
+    #jt-banner-no:hover { background: rgba(245,158,11,0.1); }
+    #jt-banner-close {
+      flex-shrink: 0; background: none; border: 1px solid #f59e0b;
+      color: #f59e0b; border-radius: 4px; padding: 3px 8px;
+      cursor: pointer; font-size: 12px; opacity: 0.7; transition: opacity 0.15s;
+    }
+    #jt-banner-close:hover { opacity: 1; }
+  `;
+
+  document.documentElement.appendChild(style);
+  document.documentElement.appendChild(banner);
+
+  function dismiss() {
+    banner.style.transition = 'opacity 0.2s';
+    banner.style.opacity = '0';
+    setTimeout(() => { banner.remove(); style.remove(); }, 220);
+  }
+
+  document.getElementById('jt-banner-yes').addEventListener('click', () => {
+    duplicateJobWithUrl(matchedJob, currentUrl);
+    banner.remove();
+    style.remove();
+    showAlreadyAppliedBanner(Object.assign({}, matchedJob, { url: currentUrl }));
+  });
+  document.getElementById('jt-banner-no').addEventListener('click',   dismiss);
+  document.getElementById('jt-banner-close').addEventListener('click', dismiss);
+}
+
 // ─── Vérification au chargement de la page ────────────────────────────────────
 function checkCurrentUrl() {
   // Guard : le contexte d'extension peut devenir invalide si l'extension
@@ -329,14 +536,26 @@ function checkCurrentUrl() {
       try {
         if (chrome.runtime.lastError) return;
         const jobs = result.jobs || [];
-        const match = jobs.find(function(j) { return urlsMatch(j.url, currentUrl); });
-        if (match && (match.rejected || match.appliedOnline || match.appliedMail)) {
-          showAlreadyAppliedBanner(match);
+
+        // Correspondance exacte par URL (même domaine)
+        const exactMatch = jobs.find(function(j) { return urlsMatch(j.url, currentUrl); });
+        if (exactMatch && (exactMatch.rejected || exactMatch.appliedOnline || exactMatch.appliedMail)) {
+          showAlreadyAppliedBanner(exactMatch);
+          return;
+        }
+
+        // Correspondance croisée par référence annonce dans l'URL
+        const refMatch = jobs.find(function(j) {
+          return !urlsMatch(j.url, currentUrl) &&
+                 refMatchesUrl(j, currentUrl) &&
+                 (j.rejected || j.appliedOnline || j.appliedMail);
+        });
+        if (refMatch) {
+          showPossibleDuplicateBanner(refMatch, currentUrl);
         }
       } catch(e) {}
     });
   } catch(e) {
-    // Extension context invalidated — arrêter le polling
     if (urlPollInterval) { clearInterval(urlPollInterval); urlPollInterval = null; }
   }
 }

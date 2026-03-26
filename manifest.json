@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "JobTracker",
-  "version": "0.1.0",
-  "version_name": "0.1.0 pre-release",
+  "version": "0.2.0",
+  "version_name": "0.2.0-beta",
   "description": "Sauvegardez et suivez vos candidatures depuis les pages d'annonces.",
   "permissions": [
     "storage",
@@ -16,15 +16,15 @@
     "service_worker": "background.js"
   },
   "icons": {
-    "16": "icon16.png",
-    "48": "icon48.png",
-    "128": "icon128.png"
+    "16": "./icons/icon16.png",
+    "48": "./icons/icon48.png",
+    "128": "./icons/icon128.png"
   },
   "action": {
     "default_icon": {
-      "16": "icon16.png",
-      "48": "icon48.png",
-      "128": "icon128.png"
+      "16": "./icons/icon16.png",
+      "48": "./icons/icon48.png",
+      "128": "./icons/icon128.png"
     },
     "default_title": "JobTracker"
   },

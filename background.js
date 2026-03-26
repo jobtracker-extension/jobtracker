@@ -1,6 +1,28 @@
 // ─── Version du schema ────────────────────────────────────────────────────────
 const SCHEMA_VERSION = 2;
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+// Envoie un message à un onglet sans planter si le content script est absent.
+function notifyTab(tabId, msg) {
+  if (!tabId) return;
+  chrome.tabs.sendMessage(tabId, msg, () => { void chrome.runtime.lastError; });
+}
+
+// Scripts injectés via Runtime.evaluate pour masquer / restaurer l'UI de l'extension
+// avant / après la capture MHTML (évite que bannières et notifs apparaissent dans la snapshot).
+const JT_HIDE_UI_EXPR = `(function(){
+  ['jt-already-banner','jt-capture-notif'].forEach(function(id){
+    var e=document.getElementById(id);
+    if(e){e._jtPrevVis=e.style.visibility;e.style.visibility='hidden';}
+  });
+})()`;
+const JT_SHOW_UI_EXPR = `(function(){
+  ['jt-already-banner','jt-capture-notif'].forEach(function(id){
+    var e=document.getElementById(id);
+    if(e){e.style.visibility=e._jtPrevVis||'';delete e._jtPrevVis;}
+  });
+})()`;
+
 async function migrate() {
   const result = await chrome.storage.local.get(['jobs', 'schemaVersion']);
   const currentVersion = result.schemaVersion || 0;
@@ -185,7 +207,12 @@ function parseMhtmlParts(mhtml) {
     var text    = null;
 
     if (enc === 'base64') {
-      dataUrl = 'data:' + ct + ';base64,' + body.replace(/[ \t\r\n]/g, '');
+      // Ne pas convertir les sous-documents HTML en data URL :
+      // les iframes capturées (pubs, tracking) peuvent représenter 100+ MB inutiles.
+      // Le document principal (text/html) est de toute façon traité via mainHtml.
+      if (ct !== 'text/html') {
+        dataUrl = 'data:' + ct + ';base64,' + body.replace(/[ \t\r\n]/g, '');
+      }
     } else if (enc === 'quoted-printable') {
       text = decodeQP(body);
     } else {
@@ -223,17 +250,17 @@ function collectUrls(html, baseUrl) {
   var attrRe = /(?:href|src|action)\s*=\s*["']([^"']+)["']/gi;
   var m;
   while ((m = attrRe.exec(html)) !== null) {
-    var u = resolve(m[1]); if (u && u.startsWith('http')) urls.add(u);
+    var u = resolve(m[1]); if (u && u.startsWith('https')) urls.add(u);
   }
   // url(...) dans style= et <style>
   var urlRe = /url\(\s*["']?([^"')\s]+)["']?\s*\)/gi;
   while ((m = urlRe.exec(html)) !== null) {
-    var u = resolve(m[1]); if (u && u.startsWith('http')) urls.add(u);
+    var u = resolve(m[1]); if (u && u.startsWith('https')) urls.add(u);
   }
   // @import dans CSS
   var importRe = /@import\s+["']([^"']+)["']/gi;
   while ((m = importRe.exec(html)) !== null) {
-    var u = resolve(m[1]); if (u && u.startsWith('http')) urls.add(u);
+    var u = resolve(m[1]); if (u && u.startsWith('https')) urls.add(u);
   }
   return Array.from(urls);
 }
@@ -241,7 +268,7 @@ function collectUrls(html, baseUrl) {
 // Fetch une URL et retourner une data URL
 function fetchAsDataUrl(url) {
   // Ignorer les schémas non supportés par fetch
-  if (!url || !url.match(/^https?:\/\//)) return Promise.resolve(null);
+  if (!url || !url.match(/^https:\/\//)) return Promise.resolve(null);
   // credentials: 'include' permet d'accéder aux ressources authentifiées
   // (images avec token signé, assets derrière session cookie)
   // Le background script a accès aux cookies du navigateur pour les sites visités
@@ -250,6 +277,8 @@ function fetchAsDataUrl(url) {
       if (!r.ok) return null;
       var ct = r.headers.get('content-type') || 'application/octet-stream';
       ct = ct.split(';')[0].trim();
+      // Ne jamais inliner un document HTML externe (iframe, redirect, etc.)
+      if (ct === 'text/html') return null;
       // Texte : CSS, JS, SVG
       if (ct.startsWith('text/') || ct === 'image/svg+xml' ||
           ct === 'application/javascript' || ct === 'application/x-javascript') {
@@ -286,6 +315,65 @@ function inlineCssUrls(cssText, cssBase, allDataUrls) {
     var d = allDataUrls[abs] || allDataUrls[url];
     return d ? 'url("' + d + '")' : m;
   });
+}
+
+// ─── Compression d'image via OffscreenCanvas (service worker MV3) ────────────
+// Recompresse tout raster > ~30 KB en WebP (PNG, JPEG, WebP, AVIF, BMP…).
+// SVG et GIF exclus (vectoriel / animation).
+// Redimensionne les images > MAX_DIM pixels pour réduire le poids des snapshots.
+// Deux passes : 70% d'abord, 40% si encore > 400 KB. Retourne l'original si aucun gain.
+var COMPRESS_MAX_DIM  = 1920;  // px — côté max après redimensionnement
+var COMPRESS_Q1       = 0.70;  // qualité passe 1
+var COMPRESS_Q2       = 0.40;  // qualité passe 2 (si passe 1 > COMPRESS_P2_THRESHOLD)
+var COMPRESS_P2_THRESHOLD = 400000; // octets — seuil déclenchant la passe 2
+async function compressImageDataUrl(dataUrl) {
+  if (dataUrl.length < 30000) return dataUrl; // < ~30 KB, pas la peine
+  // Exclure SVG (aplatit le vectoriel) et GIF (perd l'animation)
+  var match = dataUrl.match(/^data:(image\/[^;]+);base64,/);
+  if (!match || /image\/(svg\+xml|gif)/.test(match[1])) return dataUrl;
+  var mime = match[1];
+  try {
+    var b64 = dataUrl.slice(match[0].length);
+    var bin = atob(b64);
+    var u8  = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    var srcBlob = new Blob([u8], { type: mime });
+
+    var bitmap = await createImageBitmap(srcBlob);
+
+    // Redimensionner si l'image dépasse MAX_DIM de côté
+    var w = bitmap.width, h = bitmap.height;
+    if (w > COMPRESS_MAX_DIM || h > COMPRESS_MAX_DIM) {
+      var scale = COMPRESS_MAX_DIM / Math.max(w, h);
+      w = Math.round(w * scale);
+      h = Math.round(h * scale);
+    }
+    var canvas = new OffscreenCanvas(w, h);
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h);
+    bitmap.close();
+
+    // Passe 1 — WebP 70%
+    var dstBlob = await canvas.convertToBlob({ type: 'image/webp', quality: COMPRESS_Q1 });
+
+    // Passe 2 — si encore très volumineux, recompresser à qualité réduite
+    if (dstBlob.size > COMPRESS_P2_THRESHOLD) {
+      var dstBlob2 = await canvas.convertToBlob({ type: 'image/webp', quality: COMPRESS_Q2 });
+      if (dstBlob2.size < dstBlob.size) dstBlob = dstBlob2;
+    }
+
+    if (dstBlob.size >= srcBlob.size) return dataUrl; // pas de gain même après resize
+
+    var buf = await dstBlob.arrayBuffer();
+    var out = new Uint8Array(buf);
+    var str = '';
+    var CHUNK = 8192;
+    for (var j = 0; j < out.length; j += CHUNK)
+      str += String.fromCharCode.apply(null, out.subarray(j, j + CHUNK));
+    return 'data:image/webp;base64,' + btoa(str);
+  } catch(e) {
+    console.warn('[JobTracker] compressImageDataUrl:', e.message);
+    return dataUrl;
+  }
 }
 
 async function convertMhtmlToHtml(mhtml, tabId) {
@@ -325,7 +413,7 @@ async function convertMhtmlToHtml(mhtml, tabId) {
   // Fetch en parallèle par lots — retourne quand tout est dans dataUrls
   async function fetchAll(urls) {
     var toFetch = urls.filter(function(u) {
-      return u && u.startsWith('http') && !dataUrls[u];
+      return u && u.startsWith('https') && !dataUrls[u];
     });
     if (!toFetch.length) return;
     toFetch = Array.from(new Set(toFetch));
@@ -404,6 +492,26 @@ async function convertMhtmlToHtml(mhtml, tabId) {
     });
   });
   await fetchAll(cssResourceUrls);
+
+  // ── PASSE 2.5 : compresser les images volumineuses ─────────────────────────
+  var imgUrls = Object.keys(dataUrls).filter(function(u) {
+    var d = dataUrls[u];
+    return d && d.length > 30000 && /^data:image\//.test(d) && !/^data:image\/(svg\+xml|gif)/.test(d);
+  });
+  if (imgUrls.length) {
+    var totalBefore = 0, totalAfter = 0;
+    for (var ci = 0; ci < imgUrls.length; ci++) {
+      var before = dataUrls[imgUrls[ci]].length;
+      totalBefore += before;
+      var cmp = await compressImageDataUrl(dataUrls[imgUrls[ci]]);
+      totalAfter += cmp.length;
+      dataUrls[imgUrls[ci]] = cmp;
+    }
+    var savings = Math.round((1 - totalAfter / totalBefore) * 100);
+    console.log('[JobTracker] Images compressees :', imgUrls.length,
+      '| economie :', savings + '%',
+      '(' + Math.round(totalBefore / 1024) + ' KB -> ' + Math.round(totalAfter / 1024) + ' KB)');
+  }
 
   // Remplacer les placeholders par les <style> avec url() résolues
   html = html.replace(/<!-- CSS_PLACEHOLDER_(\d+) -->/g, function(m, idx) {
@@ -487,6 +595,16 @@ async function convertMhtmlToHtml(mhtml, tabId) {
       return d ? 'src="' + d + '"' : m;
     });
 
+  // Neutraliser les iframes dont le src est un data:text/html
+  // (sous-documents MHTML, iframes pub/tracking injectées par la page via JS…)
+  // On retire le src pour les rendre vides — pas de perte de contenu utile.
+  var iframeBefore = html.length;
+  html = html.replace(/(<iframe\b[^>]*?)\s*src\s*=\s*"data:text\/html[^"]*"/gi, '$1');
+  html = html.replace(/(<iframe\b[^>]*?)\s*src\s*=\s*'data:text\/html[^']*'/gi, '$1');
+  var iframeStripped = iframeBefore - html.length;
+  if (iframeStripped > 0)
+    console.log('[JobTracker] data:text/html iframes vidées —', Math.round(iframeStripped / 1024), 'KB supprimés');
+
   // Corriger le charset
   html = html.replace(/<meta[^>]*charset[^>]*>/gi, '<meta charset="utf-8">');
   if (!/charset/i.test(html)) {
@@ -533,7 +651,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const jobs = result.jobs || [];
         const idx  = jobs.findIndex(j => j.snapshotId === snapshotId || ('snap_' + j.id) === snapshotId);
         if (idx !== -1) {
-          jobs[idx].snapshotId = snapshotId;
+          jobs[idx].snapshotId   = snapshotId;
+          jobs[idx].snapshotSize = html.length;
           return chrome.storage.local.set({ jobs });
         }
       })
@@ -549,6 +668,89 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       req.onsuccess = e => sendResponse({ ok: true, snapshot: e.target.result || null });
       req.onerror   = e => sendResponse({ ok: false, error: e.target.error });
     }).catch(e => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+
+  // Duplication d'une annonce depuis le content script (bannière "possible doublon").
+  // Crée le nouveau job sans snapshot, puis capture la page courante via chrome.debugger
+  // (fire-and-forget : le job est mis à jour une fois la capture terminée).
+  if (msg.type === 'DUPLICATE_JOB') {
+    const tabId = sender.tab?.id;
+    const { originalJob, newId, newUrl, pageTitle } = msg;
+
+    const newJob = Object.assign({}, originalJob, {
+      id:           newId,
+      url:          newUrl,
+      savedAt:      new Date().toISOString(),
+      screenshotId: null,
+      snapshotId:   null,
+      snapshotSize: 0,
+    });
+
+    chrome.storage.local.get('jobs', function(r) {
+      const jobs = r.jobs || [];
+      jobs.push(newJob);
+      chrome.storage.local.set({ jobs }, function() {
+        if (!tabId) return;
+        const snapshotId = 'mhtml_' + newId;
+        chrome.debugger.attach({ tabId }, '1.3', () => {
+          if (chrome.runtime.lastError) {
+            const errMsg = chrome.runtime.lastError.message || '';
+            if (errMsg.includes('file://')) return;
+          }
+          notifyTab(tabId, { type: 'CAPTURE_STARTED' });
+          // Masquer l'UI de l'extension, puis capturer
+          chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', { expression: JT_HIDE_UI_EXPR }, () => {
+          chrome.debugger.sendCommand({ tabId }, 'Page.captureSnapshot', { format: 'mhtml' }, (captureResult) => {
+            // Restaurer l'UI puis détacher
+            chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', { expression: JT_SHOW_UI_EXPR }, () => {
+              chrome.debugger.detach({ tabId }, () => {
+                if (chrome.runtime.lastError)
+                  console.warn('[JobTracker] DUPLICATE_JOB detach warning:', chrome.runtime.lastError.message);
+              });
+            });
+            if (chrome.runtime.lastError || !captureResult || !captureResult.data) {
+              console.warn('[JobTracker] DUPLICATE_JOB capture failed');
+              notifyTab(tabId, { type: 'CAPTURE_ERROR', error: 'Capture échouée' });
+              return;
+            }
+            var _htmlSize = 0;
+            convertMhtmlToHtml(captureResult.data, tabId)
+              .then(function(html) {
+                _htmlSize = html.length;
+                return dbSave({
+                  id:      snapshotId,
+                  html:    html,
+                  url:     newUrl,
+                  title:   pageTitle || '',
+                  isMhtml: false,
+                  savedAt: new Date().toISOString(),
+                });
+              })
+              .then(function() {
+                chrome.storage.local.get('jobs', function(r2) {
+                  const jj = r2.jobs || [];
+                  const idx = jj.findIndex(j => j.id === newId);
+                  if (idx !== -1) {
+                    jj[idx].snapshotId   = snapshotId;
+                    jj[idx].screenshotId = snapshotId;
+                    jj[idx].snapshotSize = _htmlSize;
+                    chrome.storage.local.set({ jobs: jj });
+                  }
+                  notifyTab(tabId, { type: 'CAPTURE_DONE' });
+                });
+              })
+              .catch(function(e) {
+                console.error('[JobTracker] DUPLICATE_JOB capture error:', e);
+                notifyTab(tabId, { type: 'CAPTURE_ERROR', error: e.message });
+              });
+          }); // captureSnapshot
+          }); // JT_HIDE_UI_EXPR
+        }); // attach
+      }); // storage.set
+    }); // storage.get
+
+    sendResponse({ ok: true });
     return true;
   }
 
@@ -593,47 +795,59 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         console.log('[JobTracker] debugger attached, sending Page.captureSnapshot');
+        notifyTab(tabId, { type: 'CAPTURE_STARTED' });
 
-        chrome.debugger.sendCommand({ tabId }, 'Page.captureSnapshot', { format: 'mhtml' }, (result) => {
-          const cmdErr = chrome.runtime.lastError;
-          console.log('[JobTracker] captureSnapshot result:', result ? 'data length=' + (result.data || '').length : 'null', 'err:', cmdErr);
+        // Masquer l'UI de l'extension, puis capturer
+        chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', { expression: JT_HIDE_UI_EXPR }, () => {
+          chrome.debugger.sendCommand({ tabId }, 'Page.captureSnapshot', { format: 'mhtml' }, (result) => {
+            const cmdErr = chrome.runtime.lastError;
+            console.log('[JobTracker] captureSnapshot result:', result ? 'data length=' + (result.data || '').length : 'null', 'err:', cmdErr);
 
-          // Détacher dans tous les cas
-          chrome.debugger.detach({ tabId }, () => {
-            const detachErr = chrome.runtime.lastError;
-            if (detachErr) console.warn('[JobTracker] detach warning:', detachErr.message);
-          });
-
-          if (cmdErr) {
-            sendResponse({ ok: false, error: 'captureSnapshot: ' + cmdErr.message });
-            return;
-          }
-          if (!result || !result.data) {
-            sendResponse({ ok: false, error: 'captureSnapshot: donnee vide' });
-            return;
-          }
-
-          console.log('[JobTracker] MHTML capture OK, size:', result.data.length);
-          // Convertir le MHTML et stocker directement en IndexedDB (évite la limite 64 MiB de sendMessage)
-          const snapshotId = 'mhtml_' + msg.jobId;
-          convertMhtmlToHtml(result.data, tabId)
-            .then(function(html) {
-              return dbSave({
-                id:      snapshotId,
-                html:    html,
-                url:     msg.pageUrl  || '',
-                title:   msg.pageTitle || '',
-                isMhtml: false,
-                savedAt: new Date().toISOString(),
+            // Restaurer l'UI puis détacher
+            chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', { expression: JT_SHOW_UI_EXPR }, () => {
+              chrome.debugger.detach({ tabId }, () => {
+                const detachErr = chrome.runtime.lastError;
+                if (detachErr) console.warn('[JobTracker] detach warning:', detachErr.message);
               });
-            })
-            .then(function() {
-              sendResponse({ ok: true, snapshotId: snapshotId });
-            })
-            .catch(function(e) {
-              console.error('[JobTracker] conversion error:', e);
-              sendResponse({ ok: false, error: e.message });
             });
+
+            if (cmdErr) {
+              notifyTab(tabId, { type: 'CAPTURE_ERROR', error: 'captureSnapshot: ' + cmdErr.message });
+              sendResponse({ ok: false, error: 'captureSnapshot: ' + cmdErr.message });
+              return;
+            }
+            if (!result || !result.data) {
+              notifyTab(tabId, { type: 'CAPTURE_ERROR', error: 'donnée vide' });
+              sendResponse({ ok: false, error: 'captureSnapshot: donnee vide' });
+              return;
+            }
+
+            console.log('[JobTracker] MHTML capture OK, size:', result.data.length);
+            // Convertir le MHTML et stocker directement en IndexedDB (évite la limite 64 MiB de sendMessage)
+            const snapshotId = 'mhtml_' + msg.jobId;
+            var _htmlSize = 0;
+            convertMhtmlToHtml(result.data, tabId)
+              .then(function(html) {
+                _htmlSize = html.length;
+                return dbSave({
+                  id:      snapshotId,
+                  html:    html,
+                  url:     msg.pageUrl  || '',
+                  title:   msg.pageTitle || '',
+                  isMhtml: false,
+                  savedAt: new Date().toISOString(),
+                });
+              })
+              .then(function() {
+                notifyTab(tabId, { type: 'CAPTURE_DONE' });
+                sendResponse({ ok: true, snapshotId: snapshotId, htmlSize: _htmlSize });
+              })
+              .catch(function(e) {
+                console.error('[JobTracker] conversion error:', e);
+                notifyTab(tabId, { type: 'CAPTURE_ERROR', error: e.message });
+                sendResponse({ ok: false, error: e.message });
+              });
+          });
         });
       });
     });
@@ -661,7 +875,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const isImage = msg.isImage || false;
 
     // Valider que l'URL est bien HTTP(S) — pas de file://, chrome://, data:, etc.
-    if (!url || !/^https?:\/\/.+/.test(url)) {
+    if (!url || !/^https:\/\/.+/.test(url)) {
       sendResponse({ ok: false, error: 'URL invalide' });
       return true;
     }

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>JobTracker — Suivi des candidatures</title>
-  <link rel="icon" type="image/x-icon" href="icon128.ico">
+  <link rel="icon" type="image/x-icon" href="./icons/icon128.ico">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -308,6 +308,13 @@
     .btn-snap.btn-snap-ok  { opacity: 0.85; }
     .btn-snap.btn-snap-none:hover { opacity: 0.6; }
     .btn-snap.btn-snap-ok:hover   { opacity: 1; }
+    .snap-size {
+      font-size: 10px;
+      font-family: monospace;
+      vertical-align: middle;
+      margin-left: 2px;
+      color: var(--text-muted, #888);
+    }
 
     /* Empty state */
     .empty-state {
@@ -491,6 +498,22 @@
     .import-option-label { font-size: 13px; font-weight: 500; }
     .import-option-desc  { font-size: 11px; color: var(--text3); margin-top: 2px; }
     .import-dialog-btns  { display: flex; gap: 10px; justify-content: flex-end; }
+
+    /* Edit modal */
+    .edit-field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
+    .edit-field label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: .05em; }
+    .edit-field input {
+      background: var(--surface); border: 1px solid var(--border2);
+      border-radius: 6px; padding: 7px 10px;
+      color: var(--text); font-size: 13px; outline: none;
+    }
+    .edit-field input:focus { border-color: var(--accent); }
+    .btn-edit {
+      background: none; border: none; cursor: pointer;
+      font-size: 13px; padding: 2px 5px; border-radius: 4px;
+      opacity: 0.45; transition: opacity 0.15s;
+    }
+    .btn-edit:hover { opacity: 1; }
     .import-info {
       font-family: var(--mono);
       font-size: 11px;
@@ -568,7 +591,7 @@
           <th class="sortable" data-col="title">Poste <span class="sort-arrow">↕</span></th>
           <th class="sortable" data-col="location">Lieu <span class="sort-arrow">↕</span></th>
           <th>Référence</th>
-          <th>URL</th>
+          <th class="sortable" data-col="url">URL <span class="sort-arrow">↕</span></th>
           <th class="sortable" data-col="savedAt">Sauvegardée <span class="sort-arrow">↕</span></th>
           <th class="sortable" data-col="appliedOnline" title="Trier : oui d'abord puis par date">En ligne <span class="sort-arrow">↕</span></th>
           <th class="sortable" data-col="appliedMail" title="Trier : oui d'abord puis par date">Par mail <span class="sort-arrow">↕</span></th>
@@ -596,6 +619,33 @@
     <div class="dialog-btns">
       <button class="btn btn-ghost" id="dlgCancel">Annuler</button>
       <button class="btn btn-danger-ghost" id="dlgConfirm">Supprimer tout</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit modal -->
+<div class="import-overlay" id="editOverlay">
+  <div class="import-dialog">
+    <h3>Modifier l'annonce</h3>
+    <div class="edit-field">
+      <label for="editCompany">Entreprise</label>
+      <input type="text" id="editCompany" autocomplete="off">
+    </div>
+    <div class="edit-field">
+      <label for="editTitle">Poste</label>
+      <input type="text" id="editTitle" autocomplete="off">
+    </div>
+    <div class="edit-field">
+      <label for="editLocation">Lieu</label>
+      <input type="text" id="editLocation" autocomplete="off">
+    </div>
+    <div class="edit-field">
+      <label for="editRef">Référence</label>
+      <input type="text" id="editRef" autocomplete="off">
+    </div>
+    <div class="import-dialog-btns">
+      <button class="btn btn-ghost" id="editCancel">Annuler</button>
+      <button class="btn btn-primary" id="editConfirm">Enregistrer</button>
     </div>
   </div>
 </div>

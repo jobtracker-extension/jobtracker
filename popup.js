@@ -256,6 +256,7 @@ btnSave.addEventListener('click', async () => {
         const si = jj.findIndex(j => j.id === entry.id);
         if (si !== -1) {
           jj[si].screenshotId = mhtmlResult.snapshotId;
+          jj[si].snapshotSize = mhtmlResult.htmlSize || 0;
           await chrome.storage.local.set({ jobs: jj });
         }
         mhtmlOk = true;
